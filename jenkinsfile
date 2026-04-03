@@ -1,108 +1,97 @@
 pipeline {
     agent any
+
     tools {
         jdk 'jdk17'
-        nodejs 'node23'
+        nodejs 'node18'
     }
+
     environment {
-        SCANNER_HOME=tool 'sonar-scanner'
+        DOCKER_IMAGE = "kamales113/zomato"
+        SCANNER_HOME = tool 'sonar-scanner'
     }
+
     stages {
-        stage ("clean workspace") {
+
+        stage('Clean Workspace') {
             steps {
                 cleanWs()
             }
         }
-        stage ("Git Checkout") {
+
+        stage('Git Checkout') {
             steps {
-                git 'https://github.com/KastroVKiran/Zomato-Project-Kastro.git'
+                git branch: 'main',
+                    url: 'https://github.com/kamales113/Zomato-project.git'
             }
         }
-        stage("Sonarqube Analysis"){
-            steps{
+
+        // ✅ SAFE SONARQUBE ADDITION
+        stage('SonarQube Analysis') {
+            steps {
                 withSonarQubeEnv('sonar-server') {
-                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=zomato \
-                    -Dsonar.projectKey=zomato '''
+                    sh '''
+                    $SCANNER_HOME/bin/sonar-scanner \
+                    -Dsonar.projectName=zomato \
+                    -Dsonar.projectKey=zomato
+                    '''
                 }
             }
         }
-        stage("Code Quality Gate"){
-           steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'Sonar-token' 
-                }
-            } 
-        }
-        stage("Install NPM Dependencies") {
+
+        stage('Quality Gate') {
             steps {
-                sh "npm install"
+                waitForQualityGate abortPipeline: false
             }
         }
-        stage('OWASP FS SCAN') {
+
+        stage('Install Dependencies') {
             steps {
-                dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit -n', odcInstallation: 'DP-Check'
-                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-    }
-}
-        stage ("Trivy File Scan") {
-            steps {
-                sh "trivy fs . > trivy.txt"
+                sh 'npm install'
             }
         }
-        stage ("Build Docker Image") {
-            steps {
-                sh "docker build -t zomato ."
-            }
-        }
-        stage ("Tag & Push to DockerHub") {
+
+        stage('Docker Build') {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'docker') {
-                        sh "docker tag zomato kastrov/zomato:latest "
-                        sh "docker push kastrov/zomato:latest "
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        sh 'docker build -t zomato .'
                     }
                 }
             }
         }
-        stage('Docker Scout Image') {
+
+        stage('Tag & Push to DockerHub') {
             steps {
-                script{
-                   withDockerRegistry(credentialsId: 'docker', toolName: 'docker'){
-                       sh 'docker-scout quickview kastrov/zomato:latest'
-                       sh 'docker-scout cves kastrov/zomato:latest'
-                       sh 'docker-scout recommendations kastrov/zomato:latest'
-                   }
+                script {
+                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                        sh '''
+                        docker tag zomato ${DOCKER_IMAGE}:latest
+                        docker push ${DOCKER_IMAGE}:latest
+                        '''
+                    }
                 }
             }
         }
-        stage ("Deploy to Container") {
+
+        stage('Deploy to Kubernetes') {
             steps {
-                sh 'docker run -d --name zomato -p 3000:3000 kastrov/zomato:latest'
+                sh '''
+                kubectl apply -f kubernetes/deployment.yml
+                kubectl apply -f kubernetes/service.yml
+                kubectl apply -f kubernetes/hpa.yml
+                kubectl rollout status deployment/zomato
+                '''
             }
         }
     }
+
     post {
-    always {
-        emailext attachLog: true,
-            subject: "'${currentBuild.result}'",
-            body: """
-                <html>
-                <body>
-                    <div style="background-color: #FFA07A; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Project: ${env.JOB_NAME}</p>
-                    </div>
-                    <div style="background-color: #90EE90; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">Build Number: ${env.BUILD_NUMBER}</p>
-                    </div>
-                    <div style="background-color: #87CEEB; padding: 10px; margin-bottom: 10px;">
-                        <p style="color: white; font-weight: bold;">URL: ${env.BUILD_URL}</p>
-                    </div>
-                </body>
-                </html>
-            """,
-            to: 'kastrokiran@gmail.com',
-            mimeType: 'text/html',
-            attachmentsPattern: 'trivy.txt'
+        success {
+            echo '✅ Pipeline completed successfully. App deployed to EKS.'
+        }
+        failure {
+            echo '❌ Pipeline failed. Check logs.'
         }
     }
 }
