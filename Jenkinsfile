@@ -7,8 +7,8 @@ pipeline {
     }
 
     environment {
-        DOCKER_IMAGE = "kamales113/zomato"
-        SCANNER_HOME = tool 'sonar-scanner'
+        DOCKER_IMAGE = "annushram/zomato"
+        SCANNER_HOME = tool 'Sonarqube-server'
     }
 
     stages {
@@ -21,19 +21,17 @@ pipeline {
 
         stage('Git Checkout') {
             steps {
-                git branch: 'main',
-                    url: 'https://github.com/kamales113/Zomato-project.git'
+                git branch: 'master', url: 'https://github.com/annushramrg03-byte/Zomato---project.git'
             }
         }
 
-        // ✅ SAFE SONARQUBE ADDITION
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sonar-server') {
+                withSonarQubeEnv('Sonarqube-server') {
                     sh '''
-                    $SCANNER_HOME/bin/sonar-scanner \
-                    -Dsonar.projectName=zomato \
-                    -Dsonar.projectKey=zomato
+                        $SCANNER_HOME/bin/sonar-scanner \
+                        -Dsonar.projectName=zomato \
+                        -Dsonar.projectKey=zomato
                     '''
                 }
             }
@@ -41,7 +39,9 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                waitForQualityGate abortPipeline: false
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
+                }
             }
         }
 
@@ -54,9 +54,7 @@ pipeline {
         stage('Docker Build') {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
-                        sh 'docker build -t zomato .'
-                    }
+                    sh 'docker build -t zomato .'
                 }
             }
         }
@@ -64,10 +62,10 @@ pipeline {
         stage('Tag & Push to DockerHub') {
             steps {
                 script {
-                    withDockerRegistry(credentialsId: 'docker', toolName: 'docker') {
+                    withDockerRegistry([url: 'https://index.docker.io/v1/', credentialsId: 'docker']) {
                         sh '''
-                        docker tag zomato ${DOCKER_IMAGE}:latest
-                        docker push ${DOCKER_IMAGE}:latest
+                            docker tag zomato ${DOCKER_IMAGE}:latest
+                            docker push ${DOCKER_IMAGE}:latest
                         '''
                     }
                 }
@@ -76,19 +74,25 @@ pipeline {
 
         stage('Deploy to Kubernetes') {
             steps {
-                sh '''
-                kubectl apply -f kubernetes/deployment.yml
-                kubectl apply -f kubernetes/service.yml
-                kubectl apply -f kubernetes/hpa.yml
-                kubectl rollout status deployment/zomato
-                '''
+                withEnv([
+                    'AWS_DEFAULT_REGION=ap-south-1',
+                    'KUBECONFIG=/var/lib/jenkins/.kube/config'
+                ]) {
+                    sh '''
+                        kubectl get nodes
+                        kubectl apply -f Kubernetes/deployment.yaml
+                        kubectl apply -f Kubernetes/service.yaml
+                        kubectl apply -f Kubernetes/hpa.yml
+                        kubectl rollout status deployment/zomato
+                    '''
+                }
             }
         }
     }
 
     post {
         success {
-            echo '✅ Pipeline completed successfully. App deployed to EKS.'
+            echo '✅ Pipeline completed successfully. App deployed to Kubernetes.'
         }
         failure {
             echo '❌ Pipeline failed. Check logs.'
